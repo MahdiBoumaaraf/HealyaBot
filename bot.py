@@ -32,15 +32,32 @@ MAX_FILE_BYTES = 50 * 1024 * 1024
 def tg(method, payload=None, files=None, timeout=90):
     payload = payload or {}
     url = f"{TG_API}/{method}"
+
     if files:
-        response = requests.post(url, data=payload, files=files, timeout=timeout)
+        response = requests.post(
+            url,
+            data=payload,
+            files=files,
+            timeout=timeout
+        )
     else:
-        response = requests.post(url, json=payload, timeout=timeout)
+        response = requests.post(
+            url,
+            json=payload,
+            timeout=timeout
+        )
+
+    print("Telegram URL:", url)
+    print("Telegram status:", response.status_code)
+    print("Telegram response:", response.text)
 
     response.raise_for_status()
+
     result = response.json()
+
     if not result.get("ok"):
         raise RuntimeError(result)
+
     return result["result"]
 
 

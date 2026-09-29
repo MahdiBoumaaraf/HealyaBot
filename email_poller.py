@@ -11,15 +11,10 @@ IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
 EMAIL_USERNAME = os.environ["EMAIL_USERNAME"]
 EMAIL_PASSWORD = os.environ["EMAIL_PASSWORD"]
 EMAIL_FOLDER = os.getenv("EMAIL_FOLDER", "INBOX")
-
 INGEST_URL = os.environ["INGEST_URL"]
 INGEST_SECRET = os.environ["EMAIL_INGEST_SECRET"]
 
-# Use a small allow-list of course/document formats.
-ALLOWED_EXTENSIONS = {
-    ".pdf", ".doc", ".docx", ".ppt", ".pptx",
-    ".xls", ".xlsx", ".txt", ".zip"
-}
+ALLOWED_EXTENSIONS = {".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".txt", ".zip"}
 
 mail = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
 mail.login(EMAIL_USERNAME, EMAIL_PASSWORD)
@@ -34,13 +29,9 @@ for msg_id in data[0].split():
     if status != "OK":
         continue
 
-    message = BytesParser(
-        policy=policy.default
-    ).parsebytes(raw[0][1])
-
+    message = BytesParser(policy=policy.default).parsebytes(raw[0][1])
     sender = str(message.get("From", "unknown"))
     subject = str(message.get("Subject", ""))
-
     processed = False
 
     for part in message.walk():
@@ -58,31 +49,17 @@ for msg_id in data[0].split():
 
         response = requests.post(
             INGEST_URL,
-            headers={
-                "X-Email-Ingest-Secret": INGEST_SECRET,
-            },
-            data={
-                "sender": sender,
-                "subject": subject,
-                "filename": filename,
-            },
-            files={
-                "file": (
-                    filename,
-                    data_bytes,
-                    part.get_content_type()
-                )
-            },
+            headers={"X-Email-Ingest-Secret": INGEST_SECRET},
+            data={"sender": sender, "subject": subject, "filename": filename},
+            files={"file": (filename, data_bytes, part.get_content_type())},
             timeout=120,
         )
+
+        print("Render response:", response.status_code, response.text, flush=True)
         response.raise_for_status()
         processed = True
 
     if processed:
-        mail.store(
-            msg_id,
-            "+FLAGS",
-            "\\Seen"
-        )
+        mail.store(msg_id, "+FLAGS", "\\Seen")
 
 mail.logout()

@@ -21,6 +21,8 @@ EMAIL_INGEST_SECRET = os.environ["EMAIL_INGEST_SECRET"].strip()
 WA_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "").strip()
 WA_ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "").strip()
 WA_GRAPH_VERSION = os.getenv("WHATSAPP_GRAPH_VERSION", "").strip()
+WHATSAPP_GATEWAY_SECRET = os.getenv("WHATSAPP_GATEWAY_SECRET", "").strip()
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 app = Flask(__name__)
@@ -37,7 +39,8 @@ def tg(method, payload=None, files=None, timeout=90):
 
     log("========== TELEGRAM DEBUG ==========")
     log("METHOD:", method)
-    log("URL:", url)
+    safe_debug_url = url.replace(BOT_TOKEN, "***")
+    log("URL:", safe_debug_url)
 
     try:
         if files:
@@ -193,7 +196,8 @@ def health():
         "ok": True,
         "admin_count": len(ADMIN_IDS),
         "center_chat_configured": bool(CENTER_CHAT_ID),
-        "whatsapp_configured": bool(WA_VERIFY_TOKEN and WA_ACCESS_TOKEN and WA_GRAPH_VERSION)
+        "whatsapp_cloud_configured": bool(WA_VERIFY_TOKEN and WA_ACCESS_TOKEN and WA_GRAPH_VERSION),
+        "whatsapp_gateway_configured": bool(WHATSAPP_GATEWAY_SECRET and DATABASE_URL)
     })
 
 
@@ -284,6 +288,72 @@ def ingest_email():
     except Exception as exc:
         log("Email ingest error:", repr(exc))
         return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.post("/ingest/whatsapp")
+def ingest_whatsapp_gateway():
+    if not WHATSAPP_GATEWAY_SECRET:
+        log("WhatsApp gateway secret is not configured.")
+        return "gateway disabled", 503
+
+    if not check_secret(
+        "X-WhatsApp-Gateway-Secret",
+        WHATSAPP_GATEWAY_SECRET
+    ):
+        log("WhatsApp gateway ingest: invalid secret.")
+        return "forbidden", 403
+
+    sender = request.form.get(
+        "sender",
+        "unknown"
+    )
+    caption = request.form.get(
+        "caption",
+        ""
+    )
+    filename = request.form.get(
+        "filename",
+        "whatsapp_file.bin"
+    )
+
+    uploaded = request.files.get("file")
+    if uploaded is None:
+        return jsonify({
+            "ok": False,
+            "error": "file missing"
+        }), 400
+
+    data = uploaded.read()
+
+    log("========== WHATSAPP GATEWAY DEBUG ==========")
+    log("SENDER:", sender)
+    log("FILENAME:", filename)
+    log("BYTES:", len(data))
+    log("============================================")
+
+    try:
+        message_id = send_submission_to_admins(
+            source="whatsapp",
+            sender=sender,
+            filename=filename,
+            data=data,
+            caption=caption
+        )
+
+        return jsonify({
+            "ok": True,
+            "admin_message_id": message_id
+        })
+
+    except Exception as exc:
+        log(
+            "WhatsApp gateway ingest error:",
+            repr(exc)
+        )
+        return jsonify({
+            "ok": False,
+            "error": str(exc)
+        }), 500
 
 
 def whatsapp_media(media_id):

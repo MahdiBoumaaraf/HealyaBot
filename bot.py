@@ -1071,6 +1071,76 @@ def whatsapp_webhook():
 # MAIN
 # ============================================================
 
+
+@app.post("/cron/email")
+def trigger_email_workflow():
+    cron_secret = os.environ[
+        "EMAIL_CRON_SECRET"
+    ].strip()
+
+    if not check_secret(
+        "X-Cron-Secret",
+        cron_secret
+    ):
+        log(
+            "Email cron: invalid secret."
+        )
+
+        return (
+            "forbidden",
+            403
+        )
+
+    github_token = os.environ[
+        "GITHUB_ACTIONS_TOKEN"
+    ].strip()
+
+    url = (
+        "https://api.github.com/repos/"
+        "MahdiBoumaaraf/HealyaBot/"
+        "actions/workflows/email.yml/dispatches"
+    )
+
+    response = requests.post(
+        url,
+        headers={
+            "Accept":
+                "application/vnd.github+json",
+            "Authorization":
+                f"Bearer {github_token}",
+            "X-GitHub-Api-Version":
+                "2026-03-10",
+            "Content-Type":
+                "application/json",
+        },
+        json={
+            "ref": "main"
+        },
+        timeout=30
+    )
+
+    log(
+        "GitHub workflow dispatch:",
+        response.status_code,
+        response.text
+    )
+
+    if response.status_code not in (200, 204):
+        return jsonify({
+            "ok": False,
+            "github_status":
+                response.status_code,
+            "error":
+                response.text
+        }), 502
+
+    return jsonify({
+        "ok": True,
+        "message":
+            "Email workflow dispatched."
+    })
+
+
 if __name__ == "__main__":
 
     port = int(

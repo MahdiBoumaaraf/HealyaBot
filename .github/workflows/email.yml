@@ -3,7 +3,6 @@ name: Course Center Email Intake
 on:
   schedule:
     - cron: "*/5 * * * *"
-      timezone: "Africa/Algiers"
   workflow_dispatch:
 
 jobs:

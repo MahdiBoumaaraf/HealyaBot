@@ -209,6 +209,9 @@ async function startSocket() {
     markOnlineOnConnect: false,
   })
 
+  // When a pairing phone is provided, use WhatsApp's 8-character
+  // pairing code instead of relying on an ASCII QR rendered in logs.
+  // This is much easier to use on hosted platforms such as Render.
   socket.ev.on('creds.update', async () => {
     try {
       await saveCreds()
@@ -220,35 +223,49 @@ async function startSocket() {
   socket.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update
 
-    if (qr) {
+    // Prefer pairing code when WHATSAPP_PAIRING_PHONE is configured.
+    // The hosted Render log can wrap the ASCII QR, which makes scanning
+    // unreliable. Baileys supports an 8-character pairing code instead.
+    if (
+      connection === 'connecting' &&
+      PAIRING_PHONE &&
+      !state.creds.registered &&
+      !pairingRequested
+    ) {
+      pairingRequested = true
+
+      try {
+        const code = await socket.requestPairingCode(
+          PAIRING_PHONE
+        )
+
+        console.log(
+          '========== WHATSAPP PAIRING CODE =========='
+        )
+        console.log(code)
+        console.log(
+          '==========================================='
+        )
+        console.log(
+          'WhatsApp -> Linked devices -> Link a device -> Link with phone number'
+        )
+      } catch (error) {
+        pairingRequested = false
+        console.error(
+          'Pairing code error:',
+          error
+        )
+      }
+    }
+
+    // Only show a QR if no pairing phone was configured.
+    if (qr && !PAIRING_PHONE) {
       console.log('========== WHATSAPP QR ==========')
       qrcode.generate(qr, { small: true })
-      console.log('Scan it from WhatsApp -> Linked devices -> Link a device.')
+      console.log(
+        'Scan it from WhatsApp -> Linked devices -> Link a device.'
+      )
       console.log('=================================')
-
-      if (
-        PAIRING_PHONE &&
-        !state.creds.registered &&
-        !pairingRequested
-      ) {
-        pairingRequested = true
-        try {
-          const code = await socket.requestPairingCode(
-            PAIRING_PHONE
-          )
-          console.log(
-            '========== WHATSAPP PAIRING CODE ==========\n' +
-            code +
-            '\n==========================================='
-          )
-          console.log(
-            'In WhatsApp: Linked devices -> Link with phone number.'
-          )
-        } catch (error) {
-          pairingRequested = false
-          console.error('Pairing code error:', error)
-        }
-      }
     }
 
     if (connection === 'open') {

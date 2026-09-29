@@ -33,22 +33,6 @@ WHATSAPP_GATEWAY_SECRET = os.environ[
     "WHATSAPP_GATEWAY_SECRET"
 ].strip()
 
-# Meta variables are kept because the old Meta webhook route still exists.
-WA_VERIFY_TOKEN = os.getenv(
-    "WHATSAPP_VERIFY_TOKEN",
-    ""
-).strip()
-
-WA_ACCESS_TOKEN = os.getenv(
-    "WHATSAPP_ACCESS_TOKEN",
-    ""
-).strip()
-
-WA_GRAPH_VERSION = os.getenv(
-    "WHATSAPP_GRAPH_VERSION",
-    ""
-).strip()
-
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 app = Flask(__name__)
@@ -87,9 +71,9 @@ def tg(
         method
     )
 
+    # Do not log the bot URL because it contains BOT_TOKEN.
     log(
-        "URL:",
-        url
+        "Telegram request prepared."
     )
 
     try:
@@ -117,11 +101,6 @@ def tg(
     log(
         "STATUS:",
         response.status_code
-    )
-
-    log(
-        "RESPONSE:",
-        response.text
     )
 
     log(
@@ -443,11 +422,6 @@ def health():
         ),
         "whatsapp_gateway_configured": bool(
             WHATSAPP_GATEWAY_SECRET
-        ),
-        "whatsapp_meta_configured": bool(
-            WA_VERIFY_TOKEN
-            and WA_ACCESS_TOKEN
-            and WA_GRAPH_VERSION
         )
     })
 
@@ -843,221 +817,6 @@ def ingest_whatsapp_gateway():
 
         log(
             "WhatsApp gateway ingest error:",
-            repr(exc)
-        )
-
-        return jsonify({
-            "ok": False,
-            "error": str(exc)
-        }), 500
-
-
-# ============================================================
-# META WHATSAPP HELPERS
-# ============================================================
-
-def whatsapp_media(
-    media_id
-):
-    if not (
-        WA_ACCESS_TOKEN
-        and WA_GRAPH_VERSION
-    ):
-        raise RuntimeError(
-            "WhatsApp is not configured."
-        )
-
-    url = (
-        f"https://graph.facebook.com/"
-        f"{WA_GRAPH_VERSION}/"
-        f"{media_id}"
-    )
-
-    headers = {
-        "Authorization":
-            f"Bearer {WA_ACCESS_TOKEN}"
-    }
-
-    meta = requests.get(
-        url,
-        headers=headers,
-        timeout=30
-    )
-
-    meta.raise_for_status()
-
-    info = meta.json()
-
-    media_url = info.get(
-        "url"
-    )
-
-    if not media_url:
-        raise RuntimeError(
-            "WhatsApp media URL was not returned."
-        )
-
-    mime_type = info.get(
-        "mime_type",
-        "application/octet-stream"
-    )
-
-    data_response = requests.get(
-        media_url,
-        headers=headers,
-        timeout=120
-    )
-
-    data_response.raise_for_status()
-
-    return (
-        data_response.content,
-        mime_type
-    )
-
-
-def default_filename(
-    mime_type,
-    kind
-):
-    extensions = {
-        "application/pdf": ".pdf",
-        "image/jpeg": ".jpg",
-        "image/png": ".png",
-        "application/msword": ".doc",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
-        "application/vnd.ms-powerpoint": ".ppt",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
-    }
-
-    return (
-        f"whatsapp_{kind}"
-        f"{extensions.get(mime_type, '')}"
-    )
-
-
-# ============================================================
-# META WHATSAPP WEBHOOK
-# ============================================================
-
-@app.route(
-    "/webhook/whatsapp",
-    methods=["GET", "POST"]
-)
-def whatsapp_webhook():
-
-    if request.method == "GET":
-
-        if (
-            request.args.get(
-                "hub.mode"
-            ) == "subscribe"
-
-            and
-
-            request.args.get(
-                "hub.verify_token"
-            ) == WA_VERIFY_TOKEN
-        ):
-
-            return request.args.get(
-                "hub.challenge",
-                ""
-            ), 200
-
-        return (
-            "forbidden",
-            403
-        )
-
-    payload = request.get_json(
-        silent=True
-    ) or {}
-
-    try:
-
-        for entry in payload.get(
-            "entry",
-            []
-        ):
-
-            for change in entry.get(
-                "changes",
-                []
-            ):
-
-                value = change.get(
-                    "value",
-                    {}
-                )
-
-                for message in value.get(
-                    "messages",
-                    []
-                ):
-
-                    sender = message.get(
-                        "from",
-                        "unknown"
-                    )
-
-                    kind = message.get(
-                        "type"
-                    )
-
-                    if kind not in {
-                        "document",
-                        "image"
-                    }:
-                        continue
-
-                    media = message.get(
-                        kind,
-                        {}
-                    )
-
-                    media_id = media.get(
-                        "id"
-                    )
-
-                    if not media_id:
-                        continue
-
-                    data, mime_type = (
-                        whatsapp_media(
-                            media_id
-                        )
-                    )
-
-                    filename = (
-                        media.get("filename")
-                        or default_filename(
-                            mime_type,
-                            kind
-                        )
-                    )
-
-                    caption = media.get(
-                        "caption",
-                        ""
-                    )
-
-                    send_submission_to_admins(
-                        source="whatsapp",
-                        sender=sender,
-                        filename=filename,
-                        data=data,
-                        caption=caption
-                    )
-
-        return jsonify({
-            "ok": True
-        })
-
-    except Exception as exc:
-
-        log(
-            "WhatsApp webhook error:",
             repr(exc)
         )
 

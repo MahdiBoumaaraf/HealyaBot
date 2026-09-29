@@ -11,7 +11,7 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY package.json ./
-RUN npm install --omit=dev
+RUN npm install --omit=dev --no-audit --no-fund
 
 COPY requirements.txt ./
 RUN python3 -m venv /opt/venv \

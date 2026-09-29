@@ -33,6 +33,8 @@ for msg_id in data[0].split():
     sender = str(message.get("From", "unknown"))
     subject = str(message.get("Subject", ""))
     processed = False
+    failed = False
+    found_supported = False
 
     for part in message.walk():
         filename = part.get_filename()
@@ -43,23 +45,52 @@ for msg_id in data[0].split():
         if suffix not in ALLOWED_EXTENSIONS:
             continue
 
+        found_supported = True
+
         data_bytes = part.get_payload(decode=True)
         if not data_bytes:
             continue
 
-        response = requests.post(
-            INGEST_URL,
-            headers={"X-Email-Ingest-Secret": INGEST_SECRET},
-            data={"sender": sender, "subject": subject, "filename": filename},
-            files={"file": (filename, data_bytes, part.get_content_type())},
-            timeout=120,
-        )
+        try:
+            response = requests.post(
+                INGEST_URL,
+                headers={"X-Email-Ingest-Secret": INGEST_SECRET},
+                data={
+                    "sender": sender,
+                    "subject": subject,
+                    "filename": filename,
+                },
+                files={
+                    "file": (
+                        filename,
+                        data_bytes,
+                        part.get_content_type(),
+                    )
+                },
+                timeout=120,
+            )
 
-        print("Render response:", response.status_code, response.text, flush=True)
-        response.raise_for_status()
-        processed = True
+            print(
+                "Render response:",
+                response.status_code,
+                response.text,
+                flush=True,
+            )
+            response.raise_for_status()
+            processed = True
 
-    if processed:
+        except Exception as exc:
+            failed = True
+            print(
+                "Attachment processing failed:",
+                repr(exc),
+                flush=True,
+            )
+
+    # Mark a message as seen only after every supported attachment was
+    # delivered successfully. A message with no supported attachments is
+    # also marked seen so it does not get polled forever.
+    if (processed and not failed) or not found_supported:
         mail.store(msg_id, "+FLAGS", "\\Seen")
 
 mail.logout()

@@ -214,10 +214,12 @@ async function startSocket() {
     `WhatsApp Web version: ${version.join('.')} (latest=${isLatest})`
   )
 
+  console.log("WhatsApp browser profile: macOS Chrome (WEB_BROWSER)")
+
   socket = makeWASocket({
     version,
     auth: state,
-    browser: Browsers.macOS('Desktop'),
+    browser: Browsers.macOS('Chrome'),
     logger,
     markOnlineOnConnect: false,
   })

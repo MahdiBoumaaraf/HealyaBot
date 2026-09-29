@@ -5,8 +5,10 @@ import pino from 'pino'
 import qrcode from 'qrcode-terminal'
 import pg from 'pg'
 import makeWASocket, {
+  Browsers,
   DisconnectReason,
   downloadMediaMessage,
+  fetchLatestWaWebVersion,
   getContentType,
   normalizeMessageContent,
   useMultiFileAuthState,
@@ -203,8 +205,19 @@ async function startSocket() {
 
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
 
+  // WhatsApp frequently changes the Web protocol version. The bundled
+  // version in Baileys can become stale and cause new-device pairing to fail
+  // with errors such as "Couldn't link device", 428, or 401.
+  const { version, isLatest } = await fetchLatestWaWebVersion()
+
+  console.log(
+    `WhatsApp Web version: ${version.join('.')} (latest=${isLatest})`
+  )
+
   socket = makeWASocket({
+    version,
     auth: state,
+    browser: Browsers.macOS('Desktop'),
     logger,
     markOnlineOnConnect: false,
   })
@@ -246,7 +259,7 @@ async function startSocket() {
         console.log(
           '==========================================='
         )
-        console.log(
+          console.log(
           'WhatsApp -> Linked devices -> Link a device -> Link with phone number'
         )
       } catch (error) {
@@ -289,6 +302,7 @@ async function startSocket() {
           })
         }, 5000)
       } else if (loggedOut) {
+        pairingRequested = false
         console.error(
           'WhatsApp logged out. A fresh QR/pairing is required.'
         )

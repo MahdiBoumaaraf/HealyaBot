@@ -2,7 +2,8 @@ name: Course Center Email Intake
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"
+      timezone: "Africa/Algiers"
   workflow_dispatch:
 
 jobs:

@@ -6,7 +6,6 @@ import os
 import re
 from pathlib import Path
 
-import psycopg
 import requests
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
@@ -15,7 +14,6 @@ load_dotenv()
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"].strip()
 CENTER_CHAT_ID = os.getenv("CENTER_CHAT_ID", "").strip()
-DATABASE_URL = os.environ["DATABASE_URL"].strip()
 
 ADMIN_IDS = {
     int(x.strip())
@@ -149,45 +147,13 @@ def log(*args):
 
 
 # ============================================================
-# DATABASE
+# IN-MEMORY PUBLICATION STATE
 # ============================================================
 
-def db_connect():
-    return psycopg.connect(
-        DATABASE_URL,
-        sslmode="require",
-    )
-
-
-def init_publication_db():
-    with db_connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                create table if not exists course_publications (
-                    id bigserial primary key,
-                    admin_user_id bigint not null,
-                    admin_chat_id bigint not null,
-                    admin_message_id bigint not null,
-                    prompt_message_id bigint,
-                    title text,
-                    state text not null,
-                    destination_key text,
-                    topic_key text,
-                    created_at timestamptz not null default now(),
-                    updated_at timestamptz not null default now()
-                )
-                """
-            )
-
-            cur.execute(
-                """
-                create index if not exists idx_course_publications_admin_state
-                on course_publications (admin_user_id, state, updated_at desc)
-                """
-            )
-
-            conn.commit()
+# Only the WhatsApp/Baileys session is persisted in the database.
+# Course publication workflow state is temporary and kept in memory.
+PUBLICATIONS = {}
+NEXT_PUBLICATION_ID = 1
 
 
 def create_publication_state(
@@ -195,143 +161,47 @@ def create_publication_state(
     admin_chat_id,
     admin_message_id,
 ):
-    with db_connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                insert into course_publications
-                    (
-                        admin_user_id,
-                        admin_chat_id,
-                        admin_message_id,
-                        state
-                    )
-                values
-                    (%s, %s, %s, 'awaiting_title')
-                returning id
-                """,
-                (
-                    admin_user_id,
-                    admin_chat_id,
-                    admin_message_id,
-                )
-            )
+    global NEXT_PUBLICATION_ID
 
-            publication_id = cur.fetchone()[0]
-            conn.commit()
-            return publication_id
+    publication_id = NEXT_PUBLICATION_ID
+    NEXT_PUBLICATION_ID += 1
+
+    PUBLICATIONS[publication_id] = {
+        "id": publication_id,
+        "admin_user_id": admin_user_id,
+        "admin_chat_id": admin_chat_id,
+        "admin_message_id": admin_message_id,
+        "prompt_message_id": None,
+        "title": None,
+        "state": "awaiting_title",
+        "destination_key": None,
+        "topic_key": None,
+    }
+
+    return publication_id
 
 
 def set_prompt_message(
     publication_id,
     prompt_message_id,
 ):
-    with db_connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                update course_publications
-                set prompt_message_id = %s,
-                    updated_at = now()
-                where id = %s
-                """,
-                (
-                    prompt_message_id,
-                    publication_id,
-                )
-            )
-            conn.commit()
+    publication = PUBLICATIONS.get(publication_id)
+    if publication:
+        publication["prompt_message_id"] = prompt_message_id
 
 
 def get_publication(publication_id):
-    with db_connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                select
-                    id,
-                    admin_user_id,
-                    admin_chat_id,
-                    admin_message_id,
-                    prompt_message_id,
-                    title,
-                    state,
-                    destination_key,
-                    topic_key
-                from course_publications
-                where id = %s
-                """,
-                (publication_id,)
-            )
-
-            row = cur.fetchone()
-
-    if not row:
-        return None
-
-    keys = [
-        "id",
-        "admin_user_id",
-        "admin_chat_id",
-        "admin_message_id",
-        "prompt_message_id",
-        "title",
-        "state",
-        "destination_key",
-        "topic_key",
-    ]
-
-    return dict(zip(keys, row))
-
-
-def get_latest_awaiting_title(admin_user_id):
-    with db_connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                select
-                    id,
-                    admin_user_id,
-                    admin_chat_id,
-                    admin_message_id,
-                    prompt_message_id,
-                    title,
-                    state,
-                    destination_key,
-                    topic_key
-                from course_publications
-                where admin_user_id = %s
-                  and state = 'awaiting_title'
-                order by updated_at desc
-                limit 1
-                """,
-                (admin_user_id,)
-            )
-
-            row = cur.fetchone()
-
-    if not row:
-        return None
-
-    keys = [
-        "id",
-        "admin_user_id",
-        "admin_chat_id",
-        "admin_message_id",
-        "prompt_message_id",
-        "title",
-        "state",
-        "destination_key",
-        "topic_key",
-    ]
-
-    return dict(zip(keys, row))
+    return PUBLICATIONS.get(publication_id)
 
 
 def update_publication(
     publication_id,
     **fields,
 ):
+    publication = PUBLICATIONS.get(publication_id)
+    if publication is None:
+        raise ValueError("Publication request not found.")
+
     allowed = {
         "prompt_message_id",
         "title",
@@ -340,37 +210,12 @@ def update_publication(
         "topic_key",
     }
 
-    updates = []
-    values = []
-
     for key, value in fields.items():
         if key not in allowed:
             raise ValueError(
                 f"Invalid publication field: {key}"
             )
-
-        updates.append(
-            f"{key} = %s"
-        )
-        values.append(value)
-
-    if not updates:
-        return
-
-    values.append(publication_id)
-
-    query = (
-        "update course_publications "
-        "set "
-        + ", ".join(updates)
-        + ", updated_at = now() "
-        + "where id = %s"
-    )
-
-    with db_connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(query, values)
-            conn.commit()
+        publication[key] = value
 
 
 # ============================================================
@@ -672,6 +517,28 @@ def edit_admin_status(
     )
 
 
+def edit_bot_message(
+    chat_id,
+    message_id,
+    text,
+    reply_markup=None,
+):
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text[:4096],
+        "parse_mode": "HTML",
+    }
+
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+
+    return tg(
+        "editMessageText",
+        payload,
+    )
+
+
 # ============================================================
 # SEND TO ADMINS
 # ============================================================
@@ -798,47 +665,23 @@ def handle_title_message(
     publication = None
 
     if reply_to:
-        with db_connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    select
-                        id,
-                        admin_user_id,
-                        admin_chat_id,
-                        admin_message_id,
-                        prompt_message_id,
-                        title,
-                        state,
-                        destination_key,
-                        topic_key
-                    from course_publications
-                    where admin_user_id = %s
-                      and prompt_message_id = %s
-                      and state = 'awaiting_title'
-                    order by updated_at desc
-                    limit 1
-                    """,
-                    (
-                        admin_user_id,
-                        reply_to.get("message_id"),
-                    )
-                )
-                row = cur.fetchone()
+        reply_message_id = reply_to.get("message_id")
 
-        if row:
-            keys = [
-                "id",
-                "admin_user_id",
-                "admin_chat_id",
-                "admin_message_id",
-                "prompt_message_id",
-                "title",
-                "state",
-                "destination_key",
-                "topic_key",
-            ]
-            publication = dict(zip(keys, row))
+        candidates = [
+            item
+            for item in PUBLICATIONS.values()
+            if (
+                item["admin_user_id"] == admin_user_id
+                and item["prompt_message_id"] == reply_message_id
+                and item["state"] == "awaiting_title"
+            )
+        ]
+
+        if candidates:
+            publication = max(
+                candidates,
+                key=lambda item: item["id"],
+            )
 
     if not publication:
         return False
@@ -892,17 +735,14 @@ def handle_title_message(
         reply_markup=build_destination_keyboard(publication["id"]),
     )
 
-    tg(
-        "sendMessage",
-        {
-            "chat_id": publication["admin_chat_id"],
-            "text": (
-                f"✅ تم حفظ العنوان: <b>{escape_html(title)}</b>\n\n"
-                "📚 اختر المجموعة التي سينشر فيها الدرس:"
-            ),
-            "parse_mode": "HTML",
-            "reply_markup": build_destination_keyboard(publication["id"]),
-        }
+    edit_bot_message(
+        publication["admin_chat_id"],
+        publication["prompt_message_id"],
+        (
+            f"🏷 <b>{escape_html(title)}</b>\n\n"
+            "📚 اختر المجموعة التي سينشر فيها الدرس:"
+        ),
+        reply_markup=build_destination_keyboard(publication["id"]),
     )
 
     return True
@@ -971,8 +811,6 @@ def publish_publication(
         "chat_id": destination["chat_id"],
         "from_chat_id": publication["admin_chat_id"],
         "message_id": publication["admin_message_id"],
-        # Show only the lesson title to students; do not publish the admin
-        # review metadata/source information.
         "caption": escape_html(title),
         "parse_mode": "HTML",
     }
@@ -1207,6 +1045,16 @@ def telegram_webhook():
                     },
                 )
 
+                if publication.get("prompt_message_id"):
+                    edit_bot_message(
+                        publication["admin_chat_id"],
+                        publication["prompt_message_id"],
+                        "❌ <b>تم إلغاء عملية النشر.</b>",
+                        reply_markup={
+                            "inline_keyboard": []
+                        },
+                    )
+
                 answer_callback(
                     callback["id"],
                     "تم الإلغاء.",
@@ -1232,13 +1080,11 @@ def telegram_webhook():
                 topic_key=None,
             )
 
-            tg(
-                "sendMessage",
-                {
-                    "chat_id": publication["admin_chat_id"],
-                    "text": "📚 اختر المجموعة التي تريد وضع الدرس فيها:",
-                    "reply_markup": build_destination_keyboard(publication_id),
-                }
+            edit_bot_message(
+                publication["admin_chat_id"],
+                publication["prompt_message_id"],
+                "📚 اختر المجموعة:",
+                reply_markup=build_destination_keyboard(publication_id),
             )
 
             answer_callback(
@@ -1285,20 +1131,17 @@ def telegram_webhook():
                     destination_key=destination_key,
                 )
 
-                tg(
-                    "sendMessage",
-                    {
-                        "chat_id": message["chat"]["id"],
-                        "text": (
-                            f"📚 <b>{escape_html(destination['name'])}</b>\n\n"
-                            "🧵 اختر التوبيك الذي تريد وضع الدرس فيه:"
-                        ),
-                        "parse_mode": "HTML",
-                        "reply_markup": build_topic_keyboard(
-                            publication_id,
-                            destination_key
-                        ),
-                    }
+                edit_bot_message(
+                    publication["admin_chat_id"],
+                    publication["prompt_message_id"],
+                    (
+                        f"📚 <b>{escape_html(destination['name'])}</b>\n\n"
+                        "🧵 اختر التوبيك الذي سينشر فيه الدرس:"
+                    ),
+                    reply_markup=build_topic_keyboard(
+                        publication_id,
+                        destination_key
+                    ),
                 )
 
                 answer_callback(
@@ -1328,6 +1171,19 @@ def telegram_webhook():
                         f"{escape_html(publication['title'])}\n"
                         f"✅ <b>تم النشر في:</b> "
                         f"{escape_html(destination['name'])}"
+                    ),
+                    reply_markup={
+                        "inline_keyboard": []
+                    },
+                )
+
+                edit_bot_message(
+                    publication["admin_chat_id"],
+                    publication["prompt_message_id"],
+                    (
+                        f"✅ <b>تم نشر الدرس</b>\n\n"
+                        f"🏷 {escape_html(publication['title'])}\n"
+                        f"📚 {escape_html(destination['name'])}"
                     ),
                     reply_markup={
                         "inline_keyboard": []
@@ -1391,6 +1247,20 @@ def telegram_webhook():
                         f"{escape_html(destination['name'])}\n"
                         f"🧵 <b>التوبيك:</b> "
                         f"{escape_html(topic_name)}"
+                    ),
+                    reply_markup={
+                        "inline_keyboard": []
+                    },
+                )
+
+                edit_bot_message(
+                    publication["admin_chat_id"],
+                    publication["prompt_message_id"],
+                    (
+                        f"✅ <b>تم نشر الدرس</b>\n\n"
+                        f"🏷 {escape_html(publication['title'])}\n"
+                        f"📚 {escape_html(destination['name'])}\n"
+                        f"🧵 {escape_html(topic_name)}"
                     ),
                     reply_markup={
                         "inline_keyboard": []
@@ -1617,8 +1487,6 @@ def trigger_email_workflow():
 # ============================================================
 
 if __name__ == "__main__":
-    init_publication_db()
-
     port = int(
         os.getenv(
             "PORT",
